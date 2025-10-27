@@ -103,14 +103,19 @@ namespace WorkflowCore.Services.BackgroundTasks
                     }
                     if (hasTask)
                     {
-                        _secondPasses.Add(item);
-                        if (!EnableSecondPasses)
-                            await QueueProvider.QueueWork(item, Queue);
+                        // _secondPasses.Add(item);
+
+                        // Rescheduling the workflow if it is already running its last step of execution leads to NRE in
+                        // RedisPersistenceProvider. See https://github.com/danielgerlag/workflow-core/issues/1376
+                        // Until a better solution is found, we will disable it as well as second passes in general as they are only
+                        // used for Index and Event Consumers, and we don't use them.
+
+                        // if (!EnableSecondPasses)
+                        //     await QueueProvider.QueueWork(item, Queue);
                         activity?.Dispose();
                         continue;
                     }
-
-                    _secondPasses.TryRemove(item);
+                    // _secondPasses.TryRemove(item);
 
                     var waitHandle = new ManualResetEvent(false);
                     lock (_activeTasks)
@@ -171,11 +176,11 @@ namespace WorkflowCore.Services.BackgroundTasks
             try
             {
                 await ProcessItem(itemId, _cancellationTokenSource.Token);
-                while (EnableSecondPasses && _secondPasses.Contains(itemId))
-                {
-                    _secondPasses.TryRemove(itemId);
-                    await ProcessItem(itemId, _cancellationTokenSource.Token);
-                }
+                // while (EnableSecondPasses && _secondPasses.Contains(itemId))
+                // {
+                //     _secondPasses.TryRemove(itemId);
+                //     await ProcessItem(itemId, _cancellationTokenSource.Token);
+                // }
             }
             catch (OperationCanceledException)
             {
