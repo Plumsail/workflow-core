@@ -1,0 +1,90 @@
+name: Build & publish Plumsail WorkflowCore
+
+on:
+  push:
+    branches: [ plumsail ]
+  workflow_dispatch:
+    inputs:
+      newVersion:
+        description: 'New version number'
+        required: false
+
+env:
+  DOTNET_VERSION: '8.0.202'
+  FEED_URL: https://plumsail-tfs.pkgs.visualstudio.com/Actions/_packaging/Actions/nuget/v3/index.json
+
+jobs:
+  pack-and-publish:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: plumsail-workflowcore-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v2
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          source-url: ${{ env.FEED_URL }}
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.NUGETTOKEN }}
+
+      - name: NuGet cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Create Directory.Build.props for packaging
+        run: |
+          cat > Directory.Build.props <<'XML'
+          <Project>
+            <PropertyGroup Condition="'$(MSBuildProjectName)'=='WorkflowCore'">
+              <PackageId>Plumsail.WorkflowCore</PackageId>
+            </PropertyGroup>
+            <PropertyGroup Condition="'$(MSBuildProjectName)'=='WorkflowCore.Providers.Redis'">
+              <PackageId>Plumsail.WorkflowCore.Providers.Redis</PackageId>
+            </PropertyGroup>
+            <PropertyGroup>
+              <IncludeSymbols>true</IncludeSymbols>
+              <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+              <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+            </PropertyGroup>
+          </Project>
+          XML
+
+      # Find project paths, compute version without touching csproj files
+      - name: Resolve projects & version
+        id: meta
+        shell: bash
+        run: |
+          CORE_PROJ=$(git ls-files -- 'src/**/WorkflowCore.csproj' | head -n1)
+          REDIS_PROJ=$(git ls-files -- 'src/**/WorkflowCore.Providers.Redis.csproj' | head -n1)
+          [[ -n "$CORE_PROJ" && -n "$REDIS_PROJ" ]] || { echo "Projects not found"; exit 1; }
+
+          BASE_VER=$(grep -oP '(?<=<Version>)[^<]+' "$CORE_PROJ" || echo "0.0.0")
+          if [[ -n "${{ github.event.inputs.newVersion }}" ]]; then
+            VER="${{ github.event.inputs.newVersion }}"
+          else
+            VER="${BASE_VER}-plumsail-ci${{ github.run_id }}"
+          fi
+
+          echo "core=$CORE_PROJ"  >> $GITHUB_OUTPUT
+          echo "redis=$REDIS_PROJ" >> $GITHUB_OUTPUT
+          echo "version=$VER"     >> $GITHUB_OUTPUT
+
+      - name: Pack Plumsail.WorkflowCore
+        run: dotnet pack "${{ steps.meta.outputs.core }}" -c Release -o artifacts -p:Version="${{ steps.meta.outputs.version }}"
+
+      - name: Pack Plumsail.WorkflowCore.Providers.Redis
+        run: dotnet pack "${{ steps.meta.outputs.redis }}" -c Release -o artifacts -p:Version="${{ steps.meta.outputs.version }}" -p:PackProjectReferences=false
+
+      - name: Publish nupkg
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key AzureArtifacts --source "${{ env.FEED_URL }}" --skip-duplicate
+
+      - name: Publish snupkg
+        run: dotnet nuget push "artifacts/*.snupkg" --api-key AzureArtifacts --source "${{ env.FEED_URL }}" --skip-duplicate
