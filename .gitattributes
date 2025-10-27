@@ -3,6 +3,9 @@
 ###############################################################################
 * text=auto
 
+# Do not pull github actions from source repo
+.github/workflows/** merge=ours
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #
