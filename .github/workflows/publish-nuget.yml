@@ -39,25 +39,19 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Create Directory.Build.props for packaging
+      - name: Create Directory.Build.targets for packaging
         run: |
-          cat > Directory.Build.props <<'XML'
+          cat > Directory.Build.targets <<'XML'
           <Project>
-            <PropertyGroup Condition="'$(MSBuildProjectName)'=='WorkflowCore'">
-              <PackageId>Plumsail.WorkflowCore</PackageId>
-            </PropertyGroup>
-            <PropertyGroup Condition="'$(MSBuildProjectName)'=='WorkflowCore.Providers.Redis'">
-              <PackageId>Plumsail.WorkflowCore.Providers.Redis</PackageId>
-            </PropertyGroup>
-            <PropertyGroup>
-              <IncludeSymbols>true</IncludeSymbols>
-              <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-              <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
-            </PropertyGroup>
+          <PropertyGroup Condition="'$(MSBuildProjectName)'=='WorkflowCore'">
+           <PackageId>Plumsail.WorkflowCore</PackageId>
+          </PropertyGroup>
+          <PropertyGroup Condition="'$(MSBuildProjectName)'=='WorkflowCore.Providers.Redis'">
+           <PackageId>Plumsail.WorkflowCore.Providers.Redis</PackageId>
+          </PropertyGroup>
           </Project>
           XML
 
-      # Find project paths, compute version without touching csproj files
       - name: Resolve projects & version
         id: meta
         shell: bash
@@ -65,23 +59,30 @@ jobs:
           CORE_PROJ=$(git ls-files -- 'src/**/WorkflowCore.csproj' | head -n1)
           REDIS_PROJ=$(git ls-files -- 'src/**/WorkflowCore.Providers.Redis.csproj' | head -n1)
           [[ -n "$CORE_PROJ" && -n "$REDIS_PROJ" ]] || { echo "Projects not found"; exit 1; }
-
-          BASE_VER=$(grep -oP '(?<=<Version>)[^<]+' "$CORE_PROJ" || echo "0.0.0")
-          if [[ -n "${{ github.event.inputs.newVersion }}" ]]; then
-            VER="${{ github.event.inputs.newVersion }}"
+          
+          PROPS=$(git ls-files | grep -E '(^|/)Directory\.Build\.props$' | head -n1)
+          if [[ -f "$PROPS" ]]; then
+          BASE_VER=$(grep -oP '(?<=<PackageVersion>)[^<]+' "$PROPS" || true)
+          [[ -n "$BASE_VER" ]] || BASE_VER=$(grep -oP '(?<=<Version>)[^<]+' "$PROPS" || echo "0.0.0")
           else
-            VER="${BASE_VER}-plumsail-ci${{ github.run_id }}"
+          BASE_VER="0.0.0"
           fi
-
-          echo "core=$CORE_PROJ"  >> $GITHUB_OUTPUT
+          
+          if [[ -n "${{ github.event.inputs.newVersion }}" ]]; then
+          VER="${{ github.event.inputs.newVersion }}"
+          else
+          VER="${BASE_VER}-plumsail-ci${{ github.run_id }}"
+          fi
+          
+          echo "core=$CORE_PROJ"   >> $GITHUB_OUTPUT
           echo "redis=$REDIS_PROJ" >> $GITHUB_OUTPUT
-          echo "version=$VER"     >> $GITHUB_OUTPUT
+          echo "version=$VER"      >> $GITHUB_OUTPUT
 
       - name: Pack Plumsail.WorkflowCore
-        run: dotnet pack "${{ steps.meta.outputs.core }}" -c Release -o artifacts -p:Version="${{ steps.meta.outputs.version }}"
+        run: dotnet pack "${{ steps.meta.outputs.core }}" -c Release -o artifacts -p:PackageVersion="${{ steps.meta.outputs.version }}" -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg
 
       - name: Pack Plumsail.WorkflowCore.Providers.Redis
-        run: dotnet pack "${{ steps.meta.outputs.redis }}" -c Release -o artifacts -p:Version="${{ steps.meta.outputs.version }}" -p:PackProjectReferences=false
+        run: dotnet pack "${{ steps.meta.outputs.redis }}" -c Release -o artifacts -p:PackageVersion="${{ steps.meta.outputs.version }}" -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg -p:PackProjectReferences=false
 
       - name: Publish nupkg
         run: dotnet nuget push "artifacts/*.nupkg" --api-key AzureArtifacts --source "${{ env.FEED_URL }}" --skip-duplicate
