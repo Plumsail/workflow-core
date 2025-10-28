@@ -27,10 +27,11 @@ namespace WorkflowCore.Providers.Redis.Services
 
         private readonly JsonSerializerSettings _serializerSettings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.All };
         private readonly bool _removeComplete;
+        private readonly bool _removeTerminated;
 
         public bool SupportsScheduledCommands => false;
 
-        public RedisPersistenceProvider(string connectionString, string prefix, bool removeComplete, ILoggerFactory logFactory)
+        public RedisPersistenceProvider(string connectionString, string prefix, bool removeComplete, bool removeTerminated, ILoggerFactory logFactory)
         {
             _connectionString = connectionString;
             _prefix = prefix;
@@ -38,6 +39,7 @@ namespace WorkflowCore.Providers.Redis.Services
             _multiplexer = ConnectionMultiplexer.Connect(_connectionString);
             _redis = _multiplexer.GetDatabase();
             _removeComplete = removeComplete;
+            _removeTerminated = removeTerminated;
         }
 
         public async Task<string> CreateNewWorkflow(WorkflowInstance workflow, CancellationToken _ = default)
@@ -67,7 +69,7 @@ namespace WorkflowCore.Providers.Redis.Services
             else
             {
                 await _redis.SortedSetRemoveAsync($"{_prefix}.{WORKFLOW_SET}.{RUNNABLE_INDEX}", workflow.Id);
-                if (_removeComplete && workflow.Status == WorkflowStatus.Complete)
+                if ((_removeComplete && workflow.Status == WorkflowStatus.Complete) || (_removeTerminated && workflow.Status == WorkflowStatus.Terminated))
                     await _redis.HashDeleteAsync($"{_prefix}.{WORKFLOW_SET}", workflow.Id);
             }
         }
