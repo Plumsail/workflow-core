@@ -50,9 +50,15 @@ namespace WorkflowCore.Services.BackgroundTasks
                 cancellationToken.ThrowIfCancellationRequested();
                 workflow = await _persistenceStore.GetWorkflowInstance(itemId, cancellationToken);
 
-                WorkflowActivity.Enrich(workflow, "process");
-                if (workflow.Status == WorkflowStatus.Runnable)
+                if (workflow == null)
                 {
+                    Logger.LogInformation("Workflow {ItemId} not found", itemId);
+                    return;
+                }
+
+                WorkflowActivity.Enrich(workflow, "process");
+
+                if (workflow.Status == WorkflowStatus.Runnable)
                     try
                     {
                         result = await _executor.Execute(workflow, cancellationToken);
@@ -63,11 +69,8 @@ namespace WorkflowCore.Services.BackgroundTasks
                         await _persistenceStore.PersistWorkflow(workflow, result?.Subscriptions, cancellationToken);
                         await QueueProvider.QueueWork(itemId, QueueType.Index);
                     }
-                }
                 else
-                {
                     Logger.LogDebug("Workflow {ItemId} is not runnable, status: {Status}", itemId, workflow.Status);
-                }
             }
             catch (Exception ex)
             {
@@ -80,9 +83,10 @@ namespace WorkflowCore.Services.BackgroundTasks
                 // This prevents workflows from being stuck in greylist when they can't be processed
                 Logger.LogDebug("Removing workflow {ItemId} from greylist", itemId);
                 _greylist.Remove($"wf:{itemId}");
-                
+
                 await _lockProvider.ReleaseLock(itemId);
-                if ((workflow != null) && (result != null))
+
+                if (workflow != null && result != null)
                 {
                     foreach (var sub in result.Subscriptions)
                     {
@@ -91,9 +95,10 @@ namespace WorkflowCore.Services.BackgroundTasks
 
                     await _persistenceStore.PersistErrors(result.Errors, cancellationToken);
 
-                    if ((workflow.Status == WorkflowStatus.Runnable) && workflow.NextExecution.HasValue)
+                    if (workflow.Status == WorkflowStatus.Runnable && workflow.NextExecution.HasValue)
                     {
                         var readAheadTicks = _datetimeProvider.UtcNow.Add(Options.PollInterval).Ticks;
+
                         if (workflow.NextExecution.Value < readAheadTicks)
                         {
                             new Task(() => FutureQueue(workflow, cancellationToken)).Start();
@@ -101,19 +106,16 @@ namespace WorkflowCore.Services.BackgroundTasks
                         else
                         {
                             if (_persistenceStore.SupportsScheduledCommands)
-                            {
-                                await _persistenceStore.ScheduleCommand(new ScheduledCommand()
+                                await _persistenceStore.ScheduleCommand(new ScheduledCommand
                                 {
                                     CommandName = ScheduledCommand.ProcessWorkflow,
                                     Data = workflow.Id,
                                     ExecuteTime = workflow.NextExecution.Value
                                 });
-                            }
                         }
                     }
                 }
             }
-
         }
 
         private async Task TryProcessSubscription(EventSubscription subscription, IPersistenceProvider persistenceStore, CancellationToken cancellationToken)
@@ -125,11 +127,13 @@ namespace WorkflowCore.Services.BackgroundTasks
                 foreach (var evt in events)
                 {
                     var eventKey = $"evt:{evt}";
-                    bool acquiredLock = false;
+                    var acquiredLock = false;
+
                     try
                     {
                         acquiredLock = await _lockProvider.AcquireLock(eventKey, cancellationToken);
-                        int attempt = 0;
+                        var attempt = 0;
+
                         while (!acquiredLock && attempt < 10)
                         {
                             await Task.Delay(Options.IdleTime, cancellationToken);
@@ -152,9 +156,7 @@ namespace WorkflowCore.Services.BackgroundTasks
                     finally
                     {
                         if (acquiredLock)
-                        {
                             await _lockProvider.ReleaseLock(eventKey);
-                        }
                     }
                 }
             }
@@ -164,16 +166,11 @@ namespace WorkflowCore.Services.BackgroundTasks
         {
             try
             {
-                if (!workflow.NextExecution.HasValue)
-                {
-                    return;
-                }
+                if (!workflow.NextExecution.HasValue) return;
 
-                var target = (workflow.NextExecution.Value - _datetimeProvider.UtcNow.Ticks);
+                var target = workflow.NextExecution.Value - _datetimeProvider.UtcNow.Ticks;
                 if (target > 0)
-                {
                     await Task.Delay(TimeSpan.FromTicks(target), cancellationToken);
-                }
 
                 await QueueProvider.QueueWork(workflow.Id, QueueType.Workflow);
             }
